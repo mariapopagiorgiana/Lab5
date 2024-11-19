@@ -1,0 +1,108 @@
+#include <iostream>
+#include <unistd.h>
+#include <cstring>
+#include <cstdlib>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <ctime>
+using namespace std;
+
+#define DIMENS 20
+#define SHM_KEY 1122
+#define SEM_NAME "/shared_mem_semaphore"
+
+int oglindit(int nr) {
+    int og = 0;
+    while (nr != 0) {
+        og = og * 10 + nr % 10;
+        nr /= 10;
+    }
+    return og;
+}
+
+void converteste_la_char(int nr, char* buffer) {
+    snprintf(buffer, DIMENS, "%d", nr);
+}
+
+int converteste_la_int(const char* buffer) {
+    return atoi(buffer);
+}
+
+int main() {
+    // Crearea memoriei partajate
+    int shmid = shmget(SHM_KEY, 1024, 0666 | IPC_CREAT);
+    if (shmid == -1) {
+        perror("Eroare la crearea memoriei partajate");
+        exit(EXIT_FAILURE);
+    }
+    cout << "Cheia pentru memoria partajata: " << shmid << endl;
+
+    void* shared_mem = shmat(shmid, NULL, 0);
+    if (shared_mem == (void*)-1) {
+        perror("Eroare la atasarea memoriei partajate");
+        exit(EXIT_FAILURE);
+    }
+    cout << "Procesul atasat la adresa: " << shared_mem << endl;
+
+    // Inițializarea semaforului
+    sem_t* sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
+    if (sem == SEM_FAILED) {
+        perror("Eroare la crearea semaforului");
+        exit(EXIT_FAILURE);
+    }
+
+    // Inițializarea valorii inițiale din memorie
+    int continut_crt_mem = 0;
+    char buffer[DIMENS];
+    converteste_la_char(continut_crt_mem, buffer);
+    memcpy(shared_mem, buffer, sizeof(buffer));
+
+    srand(time(0));
+    int pid = fork();
+
+    while (true) {
+        sem_wait(sem); // Rezervă semaforul
+
+        // Citirea si verificarea valorii curente din memorie
+        continut_crt_mem = converteste_la_int((char*)shared_mem);
+        if (continut_crt_mem >= 1000) {
+            sem_post(sem); // Eliberează semaforul
+            break;
+        }
+
+        // Aruncarea monedei
+        int nr_rand = rand() % 2 + 1;
+        if (nr_rand == 2) {
+            if (pid == 0) {
+                cout << "Procesul copil: " << endl;
+            } else {
+                cout << "Procesul parinte: " << endl;
+            }
+
+            // Afisarea valorii curente si actualizarea memoriei
+            printf("    Citeste din memorie: %s\n", (char*)shared_mem);
+            continut_crt_mem++;
+            converteste_la_char(continut_crt_mem, buffer);
+            memcpy(shared_mem, buffer, sizeof(buffer));
+            printf("    Scrie in memorie: %s\n", (char*)shared_mem);
+        }
+
+        sem_post(sem); // Eliberează semaforul
+        usleep(100000); // Pauză pentru a observa mai bine schimbările
+    }
+
+    // Eliberarea resurselor
+    if (pid == 0) { // Procesul copil nu distruge semaforul
+        shmdt(shared_mem);
+    } else {
+        shmdt(shared_mem);
+        shmctl(shmid, IPC_RMID, NULL);
+        sem_close(sem);
+        sem_unlink(SEM_NAME);
+    }
+
+    return 0;
+}
